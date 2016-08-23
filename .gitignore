@@ -1,0 +1,17 @@
+*.DS_Store
+*.DS_store
+
+*.idea
+*.ipynb_checkpoints
+
+*.pyc
+
+*.mp4
+*.npy
+
+*env
+
+__database_modification_tests.ipynb
+__database_modification_tests.log
+
+__exploratory*.ipynb
