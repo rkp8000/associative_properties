@@ -139,8 +139,10 @@ class LIFWithKWTAItems(object):
     :param t_rp: refractory period
     :param n_items: number of item neurons
     :param n_assocs: number of association neurons
+    :param tau_fre: time constant for estimating firing rate
     :param k_wta: number of allowed active neurons in k-WTA rule
     :param wta_th: winner-take-all threshold
+    :param wta_inh: inhibition level to implement WTA (should be negative)
     :param noise: noise level
     :param w_pa: connectivity matrix from association neurons to principal neurons
     :param w_ap: from principal to association neurons
@@ -150,14 +152,15 @@ class LIFWithKWTAItems(object):
     """
 
     def __init__(
-            self, tau, v_rest, v_th, v_reset, t_rp,
-            k_wta, wta_th, noise,
+            self, tau, v_rest, v_th, v_reset, v_min, t_rp,
+            tau_fre, k_wta, wta_th, wta_inh, noise,
             w_pa, w_ap, w_am, w_ma, w_mm):
 
         self.tau = tau
         self.v_rest = v_rest
         self.v_th = v_th
         self.v_reset = v_reset
+        self.v_min = v_min
         self.t_rp = t_rp
 
         n_items = w_pa.shape[0]
@@ -174,8 +177,10 @@ class LIFWithKWTAItems(object):
 
         self.n_neurons = n_items + 2 * n_assocs
 
+        self.tau_fre = tau_fre
         self.k_wta = k_wta
         self.wta_th = wta_th
+        self.wta_inh = wta_inh
         self.noise = noise
 
         self.w_pa = w_pa
@@ -265,10 +270,17 @@ class LIFWithKWTAItems(object):
 
         n_steps = len(drives.values()[0])
 
-        recorded = {
-            variable: np.nan * np.zeros((n_steps, self.n_neurons))
-            for variable in record
-        }
+        results = {}
+
+        for variable in record:
+
+            if variable in ['spikes', 'vs']:
+
+                results[variable] = np.nan * np.zeros((n_steps, self.n_neurons))
+
+            elif variable in ['fre_items']:
+
+                results[variable] = np.nan * np.zeros((n_steps, self.n_items))
 
         rp_ctrs = np.zeros((self.n_neurons,))
 
@@ -277,6 +289,7 @@ class LIFWithKWTAItems(object):
             if t_ctr == 0:
 
                 v = v_init.copy()
+                fre_items = np.zeros((self.n_items,))
 
             else:
 
@@ -292,10 +305,35 @@ class LIFWithKWTAItems(object):
 
             v[rp_ctrs > 0] = self.v_reset
 
-            # allow above threshold neurons to spike
+            # perform k-WTA inhibition
+
+            if np.sum(fre_items > self.wta_th) >= self.k_wta:
+
+                # get indices of neurons with largest firing rates
+
+                idxs_winners = np.argpartition(fre_items, -self.k_wta)[-self.k_wta:]
+
+                # build inhibitory input vector
+
+                input_inh = self.wta_inh * np.ones((self.n_items,))
+                input_inh[idxs_winners] = 0
+
+                # apply inhibitory input to voltages
+
+                v[self.item_idxs] += input_inh
+
+            # make sure no neurons are below v_min
+
+            v[v < self.v_min] = self.v_min
+
+            # allow neurons that are still above threshold to spike
 
             spikes = (v > self.v_th).astype(float)
             v[spikes == 1] = self.v_reset
+
+            # update firing rate estimate
+
+            fre_items += (dt / self.tau_fre) * (-fre_items) + (spikes[self.item_idxs] / self.tau_fre)
 
             # decrement refractory period counters and reset counters for spiking neurons
 
@@ -307,12 +345,16 @@ class LIFWithKWTAItems(object):
 
             if 'spikes' in record:
 
-                recorded['spikes'][t_ctr, :] = spikes.copy()
+                results['spikes'][t_ctr, :] = spikes.copy()
 
             if 'vs' in record:
 
-                recorded['vs'][t_ctr, :] = v.copy()
+                results['vs'][t_ctr, :] = v.copy()
+
+            if 'fre_items' in record:
+
+                results['fre_items'][t_ctr, :] = fre_items
 
         ts = np.arange(n_steps) * dt
 
-        return recorded, ts
+        return results, ts
