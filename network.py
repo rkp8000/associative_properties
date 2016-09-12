@@ -130,7 +130,7 @@ class Basic(object):
 class LIFWithKWTAItems(object):
     """
     Continuous time network of LIF neurons with an external mechanism that allows at most
-    2 item neurons to be active at a time.
+    2 item neurons to be active at a time. Synapses are conductance-based.
 
     :param tau: membrane time constant
     :param v_rest: resting potential
@@ -153,6 +153,7 @@ class LIFWithKWTAItems(object):
 
     def __init__(
             self, tau, v_rest, v_th, v_reset, v_min, t_rp,
+            v_rev_syn_exc, tau_syn_exc,
             tau_fre, k_wta, wta_th, wta_inh, noise,
             w_pa, w_ap, w_am, w_ma, w_mm):
 
@@ -162,6 +163,9 @@ class LIFWithKWTAItems(object):
         self.v_reset = v_reset
         self.v_min = v_min
         self.t_rp = t_rp
+
+        self.v_rev_syn_exc = v_rev_syn_exc
+        self.tau_syn_exc = tau_syn_exc
 
         n_items = w_pa.shape[0]
         n_assocs = w_pa.shape[1]
@@ -219,46 +223,57 @@ class LIFWithKWTAItems(object):
 
         return drive_flat
 
-    def calc_synaptic_inputs(self, spikes):
+    def calc_synaptic_conductances(self, g, spikes, dt):
+        """
+        Calculate the synaptic conductances given the previous conductances and the current spikes.
+
+        :param g: previous conductances for all neurons
+        :param spikes: previous spikes
+        :return: new conductances
+        """
 
         items = self.item_idxs
         assocs = self.assoc_idxs
         mems = self.mem_idxs
 
-        syn_inputs = np.zeros((self.n_neurons,))
-
-        # go through all connectivity matrices
+        syn_inputs = np.nan * np.zeros((self.n_neurons,))
 
         syn_inputs[items] = self.w_pa.dot(spikes[assocs])
         syn_inputs[assocs] = self.w_ap.dot(spikes[items]) + self.w_am.dot(spikes[mems])
         syn_inputs[mems] = self.w_ma.dot(spikes[assocs]) + self.w_mm.dot(spikes[mems])
 
-        return syn_inputs
+        dg = (dt / self.tau_syn_exc) * (-g + (syn_inputs * (self.tau_syn_exc / dt)))
 
-    def calc_voltage(self, v, drive, spikes, noise, dt):
+        return g + dg
+
+    def calc_voltage(self, v, g, drive, noise, dt):
         """
         Calculate the new voltage given the previous voltage and all inputs.
 
         :param v: previous voltage
+        :param g: synaptic conductances for all neurons
         :param drive: drive to all neurons
         :param spikes: spikes from all neurons
         :param noise: noise to all neurons
         :return: voltage for all neurons
         """
 
-        inputs = self.flatten_drive(drive) + self.calc_synaptic_inputs(spikes)
+        # total inputs are drive currents + synaptic currents
+
+        inputs = self.flatten_drive(drive) + (g * (self.v_rev_syn_exc - v))
 
         dv = (dt / self.tau) * (-(v - self.v_rest) + inputs + noise)
 
         return v + dv
 
-    def run(self, drives, v_init, dt, record=None):
+    def run(self, drives, v_init, g_init, dt, record=None):
         """
         Run the network given a set of drives.
 
         :param drives: dictionary of drives to apply at each time point with keys
             "item", "assoc", or "memory"
         :param v_init: initial voltages for all neurons
+        :param g_init: initial conductances of all neurons
         :param dt: numerical integration time step
         :param record: list of observables to record
         :return: dictionary of recorded items
@@ -274,7 +289,7 @@ class LIFWithKWTAItems(object):
 
         for variable in record:
 
-            if variable in ['spikes', 'vs']:
+            if variable in ['spikes', 'vs', 'gs']:
 
                 results[variable] = np.nan * np.zeros((n_steps, self.n_neurons))
 
@@ -289,6 +304,7 @@ class LIFWithKWTAItems(object):
             if t_ctr == 0:
 
                 v = v_init.copy()
+                g = g_init.copy()
                 fre_items = np.zeros((self.n_items,))
 
             else:
@@ -299,7 +315,8 @@ class LIFWithKWTAItems(object):
 
                 noise = self.noise * np.random.normal(0, 1, (self.n_neurons,))
 
-                v = self.calc_voltage(v=v, drive=drive, spikes=spikes, noise=noise, dt=dt)
+                g = self.calc_synaptic_conductances(g=g, spikes=spikes, dt=dt)
+                v = self.calc_voltage(v=v, g=g, drive=drive, noise=noise, dt=dt)
 
             # set neurons in refractory period back to v_reset
 
@@ -350,6 +367,10 @@ class LIFWithKWTAItems(object):
             if 'vs' in record:
 
                 results['vs'][t_ctr, :] = v.copy()
+
+            if 'gs' in record:
+
+                results['gs'][t_ctr, :] = g.copy()
 
             if 'fre_items' in record:
 
