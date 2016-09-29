@@ -7,7 +7,44 @@ from scipy import optimize
 from scipy import stats
 
 
-def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
+def _log_sum(log_xs):
+    """Efficiently calculates the logarithm of a sum from the logarithm of its
+    terms.
+
+    logsum employs an efficient algorithm for finding the logarithm of a sum
+    of numbers when provided with the logarithm of the terms in the sum; this
+    is useful when the logarithms are too large or small
+    and would cause numerical errors if exponentiated
+
+    :param log_xs: logarithms of terms to sum (1d array)
+    :return logarithm of the sum
+
+    example:
+        >>> log_xs = np.array([-1000,-1001,-1002])
+        >>> np.log(np.sum(np.exp(log_xs)))
+        -inf
+        >>> _log_sum(log_xs)
+        -999.59239403555557
+        >>> log_xs = np.array([1000,1001,1002])
+        >>> np.log(np.sum(np.exp(log_xs)))
+        inf
+        >>> _log_sum(log_xs)
+        1002.4076059644444
+    """
+    # get largest element
+
+    log_x_max = np.max(log_xs)
+
+    # normalize log_x by subtracting log_x_max
+
+    log_x_normed = log_xs - log_x_max
+
+    # calculate sum of logarithms
+
+    return log_x_max + np.log(np.sum(np.exp(log_x_normed)))
+
+
+def recall_error_upper_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
     """
     calculate using Monte Carlo simulation the probability of correctly recalling l associations
     between m possible items connected to n association/memory units
@@ -32,24 +69,24 @@ def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=
 
     # calculate h, a lower bound probability that a random item's connections interfere
 
-    log_hs = log_probability_no_interference_lower_bound_random_item(vs, q)
+    log_neg_log_hs = log_neg_log_probability_no_interference_lower_bound_random_item(vs, q)
 
     # calculate lower bound on correct recall probabilities
 
-    ps = [recall_probability_lower_bound(m, l, fs, log_hs) for m in ms]
+    errs = [recall_error_upper_bound(np.log(m), l, fs, log_neg_log_hs) for m in ms]
 
-    return np.array(ps)
+    return np.array(errs)
 
 
-def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc, vs=None):
+def max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, vs=None):
     """
     approximate the maximum number of items that can be randomly connected to a memory reservoir such
-    that the probability of correctly recalling l pair-wise associations is greater than a
-    minimum value
+    that the probability of incorrect recall is less than a specified level
+
     :param n: number of association/memory units
     :param q: connection probability
     :param l: number of associations to recall
-    :param p_min: minimum recall probability
+    :param err_max: max recall error (from 0 to 1)
     :param n_samples_mc: number of samples to use in monte carlo simulation
     :return: number of items (m)
     """
@@ -67,7 +104,7 @@ def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc, vs=None)
 
     # calculate h, a lower bound probability that a random item's connections interfere
 
-    log_hs = log_probability_no_interference_lower_bound_random_item(vs, q)
+    log_neg_log_hs = log_neg_log_probability_no_interference_lower_bound_random_item(vs, q)
 
     # determine bounds for the function solver
 
@@ -75,7 +112,7 @@ def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc, vs=None)
 
     m_test = 2*l
 
-    while recall_probability_lower_bound(m_test ,l, fs, log_hs) > p_min:
+    while recall_error_upper_bound(np.log(m_test), l, fs, log_neg_log_hs) < err_max:
 
         m_test *= 2
 
@@ -83,28 +120,58 @@ def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc, vs=None)
 
     def function_to_solve(m):
 
-        return recall_probability_lower_bound(m ,l, fs, log_hs) - p_min
+        return recall_error_upper_bound(np.log(m), l, fs, log_neg_log_hs) - err_max
 
     m_best = optimize.brentq(function_to_solve, m_test / 2, m_test, xtol=0.5)
 
     return m_best
 
 
-def recall_probability_lower_bound(m, l, fs, log_hs):
+def recall_error_upper_bound(log_m, l, fs, log_neg_log_hs):
     """
     calculate a lower bound on the correct recall probability for an idealized version of the short-term
     associative memory network with random connections; this function assumes that f and h have been
     precomputed from a random selection of {v_1, ..., v_2l}; as the size of f, h, increases the approximation
     becomes exact.
 
-    :param m: number of item units
+    :param log_m: log of number of item units
     :param l: number of pair-wise associations required to recall
     :param fs: indicator values indicating whether {v_1, ..., v_2L} interferes with recall
-    :param log_hs: log probability that a single random v_j interferes with recall
-    :return approximate probability that l associations can be recalled precisely
+    :param log_neg_log_hs: log of negative log probability that a single random v_j interferes with recall
+        (see notebook for why this is a useful mathematical quantity)
+    :return approximate probability of incorrectly recalling l associations
     """
 
-    return np.mean(np.exp((m - (2*l)) * log_hs) * fs)
+    # assume m = m - 2L if m/(2L) > 1e9
+
+    if (log_m - np.log(2*l)) > 9*np.log(10):
+
+        temp_0 = log_m
+
+    else:
+
+        temp_0 = np.log(np.exp(log_m) - (2*l))
+
+    # calc temp quantity comparing m to
+
+    temp_1 = temp_0 + log_neg_log_hs
+
+    # calculate error using either exact formula or log approximation
+
+    errs = np.nan * np.zeros(temp_1.shape)
+
+    approx_mask = temp_1 < np.log(-np.log(1 - 1e-9))
+
+    errs[~approx_mask] = 1 - np.exp(-np.exp(temp_1[~approx_mask]))
+    errs[approx_mask] = np.exp(temp_1[approx_mask])
+
+    # set error to 1 for deterministic errors
+
+    errs[fs == 0] = 1
+
+    # if error is less than 1e-9 calculate via log approximation for greater accuracy
+
+    return np.mean(errs)
 
 
 def no_interference_first_items(vs):
@@ -131,6 +198,7 @@ def no_interference_first_items(vs):
         if np.any(isctn_sizes == 0):
 
             fs[v_ctr] = 0
+
             continue
 
         f = 1
@@ -160,7 +228,7 @@ def no_interference_first_items(vs):
     return fs
 
 
-def log_probability_no_interference_lower_bound_random_item(vs, q):
+def log_neg_log_probability_no_interference_lower_bound_random_item(vs, q):
     """
     Calculate a lower bound on the probability that there will be no interference between
     the random connections between a single item and the association/memory reservoir,
@@ -171,11 +239,9 @@ def log_probability_no_interference_lower_bound_random_item(vs, q):
     :return: probability of no interference for each v
     """
 
-    log_hs = np.nan * np.zeros((vs.shape[0],))
+    log_neg_log_hs = np.nan * np.zeros((vs.shape[0],))
 
     for v_ctr, v in enumerate(vs):
-
-        log_h = 0
 
         # get intersections, sizes, and maintained sets
 
@@ -183,10 +249,25 @@ def log_probability_no_interference_lower_bound_random_item(vs, q):
         isctn_sizes = isctns.sum(1)
         maintained = (isctns.sum(0) > 0).astype(int)
 
+        # store the log of the negative log of each cumulative distribution
+
+        temps = []
+
         for i, isctn_size in enumerate(isctn_sizes):
 
-            log_h += stats.binom.logcdf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
+            log_sf = stats.binom.logsf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
 
-        log_hs[v_ctr] = log_h
+            # if sf is very small then sf = -log(cdf) approximately
 
-    return log_hs
+            if log_sf < -9*np.log(10):
+
+                temps.append(log_sf)
+
+            else:
+
+                log_cdf = stats.binom.logcdf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
+                temps.append(np.log(-log_cdf))
+
+        log_neg_log_hs[v_ctr] = _log_sum(np.array(temps))
+
+    return log_neg_log_hs
