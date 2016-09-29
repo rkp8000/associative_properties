@@ -3,10 +3,11 @@ functions for determining capacity of random network
 """
 from __future__ import division, print_function
 import numpy as np
+from scipy import optimize
 from scipy import stats
 
 
-def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc):
+def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
     """
     calculate using Monte Carlo simulation the probability of correctly recalling l associations
     between m possible items connected to n association/memory units
@@ -20,7 +21,9 @@ def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc):
 
     # first take many samples of connections of the first 2l items to the memory units
 
-    vs = (np.random.rand(n_samples_mc, 2*l, n) < q).astype(int)
+    if vs is None:
+
+        vs = (np.random.rand(n_samples_mc, 2*l, n) < q).astype(int)
 
     # calculate f, the indicator values for whether the first 2l item unit connections
     # interfere with recall (with an indicator of 0 if they do)
@@ -38,7 +41,7 @@ def recall_probability_lower_bound_vs_item_number(ms, n, q, l, n_samples_mc):
     return np.array(ps)
 
 
-def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc):
+def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc, vs=None):
     """
     approximate the maximum number of items that can be randomly connected to a memory reservoir such
     that the probability of correctly recalling l pair-wise associations is greater than a
@@ -53,7 +56,9 @@ def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc):
 
     # first take many samples of connections of the first 2l items to the memory units
 
-    vs = (np.random.rand(n_samples_mc, 2 * l, n) < q).astype(int)
+    if vs is None:
+
+        vs = (np.random.rand(n_samples_mc, 2 * l, n) < q).astype(int)
 
     # calculate f, the indicator values for whether the first 2l item unit connections
     # interfere with recall (with an indicator of 0 if they do)
@@ -64,22 +69,23 @@ def max_items_with_min_recall_probability(n, q, l, p_min, n_samples_mc):
 
     log_hs = log_probability_no_interference_lower_bound_random_item(vs, q)
 
+    # determine bounds for the function solver
+
+    ## keep doubling m until the recall probability is lower than p_min
+
+    m_test = 2*l
+
+    while recall_probability_lower_bound(m_test ,l, fs, log_hs) > p_min:
+
+        m_test *= 2
+
+    # now that we have upper and lower bounds, solve for the best m using Brent's method
+
     def function_to_solve(m):
 
         return recall_probability_lower_bound(m ,l, fs, log_hs) - p_min
 
-    # solve the function
-
-    # keep doubling m until function_to_solve spits out a value greater than 0
-
-    m_test = 2*l
-
-    m_lb = None
-    m_ub = None
-
-    # now that we have upper and lower bounds, solve for the best m
-
-    m_best = None
+    m_best = optimize.brentq(function_to_solve, m_test / 2, m_test, xtol=0.5)
 
     return m_best
 
@@ -98,7 +104,7 @@ def recall_probability_lower_bound(m, l, fs, log_hs):
     :return approximate probability that l associations can be recalled precisely
     """
 
-    return np.exp((m - (2*l)) * log_hs) * fs
+    return np.mean(np.exp((m - (2*l)) * log_hs) * fs)
 
 
 def no_interference_first_items(vs):
@@ -159,7 +165,7 @@ def log_probability_no_interference_lower_bound_random_item(vs, q):
     Calculate a lower bound on the probability that there will be no interference between
     the random connections between a single item and the association/memory reservoir,
     given the connections of a set of item associations to be remembered.
-    between a
+
     :param vs: list of vs (connections between first 2l item units and memory reservoir)
     :param q: connection probability
     :return: probability of no interference for each v
