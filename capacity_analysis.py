@@ -78,7 +78,7 @@ def recall_error_upper_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
     return np.array(errs)
 
 
-def max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, vs=None):
+def log_max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, m_tol, vs=None):
     """
     approximate the maximum number of items that can be randomly connected to a memory reservoir such
     that the probability of incorrect recall is less than a specified level
@@ -110,21 +110,25 @@ def max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, vs=None):
 
     ## keep doubling m until the recall probability is lower than p_min
 
-    m_test = 2*l
+    log_m_test = np.log(2*l + 1)
 
-    while recall_error_upper_bound(np.log(m_test), l, fs, log_neg_log_hs) < err_max:
+    if recall_error_upper_bound(log_m_test, l, fs, log_neg_log_hs) >= err_max:
 
-        m_test *= 2
+        return 0
+
+    while recall_error_upper_bound(log_m_test, l, fs, log_neg_log_hs) < err_max:
+
+        log_m_test += 1
 
     # now that we have upper and lower bounds, solve for the best m using Brent's method
 
-    def function_to_solve(m):
+    def function_to_solve(log_m):
 
-        return recall_error_upper_bound(np.log(m), l, fs, log_neg_log_hs) - err_max
+        return recall_error_upper_bound(log_m, l, fs, log_neg_log_hs) - err_max
 
-    m_best = optimize.brentq(function_to_solve, m_test / 2, m_test, xtol=0.5)
+    log_m_best = optimize.brentq(function_to_solve, log_m_test - 1, log_m_test, xtol=m_tol)
 
-    return m_best
+    return log_m_best
 
 
 def recall_error_upper_bound(log_m, l, fs, log_neg_log_hs):
