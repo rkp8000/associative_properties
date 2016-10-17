@@ -44,6 +44,157 @@ def _log_sum(log_xs):
     return log_x_max + np.log(np.sum(np.exp(log_x_normed)))
 
 
+def no_interference_first_items(vs):
+    """
+    For each of several matrices, calculate whether they will interfere with one another or not
+    :param vs: stack of 2D arrays corresponding to connections for first 2L items
+    :return: 1 or 0 for each v; 1 indicates no interference among first items, 0 otherwise
+    """
+
+    # calculate maintained sets
+
+    fs = -1 * np.ones((vs.shape[0],), dtype=int)
+
+    l = int(vs.shape[1] / 2)
+
+    for v_ctr, v in enumerate(vs):
+
+        # get intersections, sizes, and maintained sets
+
+        isctns = np.array([v[2*i, :] * v[2*i+1, :] for i in range(int(len(v)/2))])
+        isctn_sizes = isctns.sum(1)
+        maintained = (isctns.sum(0) > 0).astype(int)
+
+        # set to 0 if any empty intersections
+
+        if np.any(isctn_sizes == 0):
+
+            fs[v_ctr] = 0
+            continue
+
+        f = 1
+
+        # loop over all intersections
+
+        for i, isctn_size in enumerate(isctn_sizes):
+
+            # loop over all items not in this conjunction
+
+            for j in [jj for jj in range(l) if jj not in [2*i, 2*i + 1]]:
+
+                # set to 0 if this item interferes with either item in current conjunction
+
+                if np.sum(v[j, :] * v[2*i, :] * maintained) >= isctn_size:
+
+                    f = 0
+                    break
+
+                if np.sum(v[j, :] * v[2*i + 1, :] * maintained) >= isctn_size:
+
+                    f = 0
+                    break
+
+            # stop counting if an interference has been found
+
+            if f == 0:
+
+                break
+
+        fs[v_ctr] = f
+
+    return fs
+
+
+def log_neg_log_probability_no_interference_lower_bound_random_item(vs, q):
+    """
+    Calculate a lower bound on the probability that there will be no interference between
+    the random connections between a single item and the association/memory reservoir,
+    given the connections of a set of item associations to be remembered.
+
+    :param vs: list of vs (connections between first 2l item units and memory reservoir)
+    :param q: connection probability
+    :return: log of the negative log of lower bound on probability of no interference for each v
+    """
+
+    log_neg_log_hs = np.nan * np.zeros((vs.shape[0],))
+
+    for v_ctr, v in enumerate(vs):
+
+        # get intersections, sizes, and maintained sets
+
+        isctns = np.array([v[2 * i, :] * v[2 * i + 1, :] for i in range(int(len(v) / 2))])
+        isctn_sizes = isctns.sum(1)
+        maintained = (isctns.sum(0) > 0).astype(int)
+
+        # store the log of the negative log of each cumulative distribution
+
+        temps = []
+
+        for i, isctn_size in enumerate(isctn_sizes):
+
+            log_sf = stats.binom.logsf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
+
+            # if sf is very small then sf = -log(cdf) approximately
+
+            if log_sf < -9*np.log(10):
+
+                temps.append(log_sf)
+
+            else:
+
+                log_cdf = stats.binom.logcdf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
+                temps.append(np.log(-log_cdf))
+
+        log_neg_log_hs[v_ctr] = _log_sum(np.array(temps))
+
+    return log_neg_log_hs
+
+
+def recall_error_upper_bound(log_m, l, fs, log_neg_log_hs):
+    """
+    calculate an upper bound on the recall error for an idealized version of the short-term
+    associative memory network with random connections; this function assumes that f and h have been
+    precomputed from a random selection of {v_1, ..., v_2l}; as the size of f, h, increases the approximation
+    becomes exact.
+
+    :param log_m: log of number of item units
+    :param l: number of pair-wise associations required to recall
+    :param fs: indicator values indicating whether {v_1, ..., v_2L} interferes with recall
+    :param log_neg_log_hs: log of negative log probability that a single random v_j interferes with recall
+        (see notebook for why this is a useful mathematical quantity)
+    :return approximate probability of incorrectly recalling l associations
+    """
+
+    # assume m = m - 2L if m/(2L) > 1e9
+
+    if (log_m - np.log(2*l)) > 9*np.log(10):
+
+        temp_0 = log_m
+
+    else:
+
+        temp_0 = np.log(np.exp(log_m) - (2*l))
+
+    # calc temp quantity comparing m to
+
+    temp_1 = temp_0 + log_neg_log_hs
+
+    # calculate error using either exact formula or log approximation
+
+    errs = np.nan * np.zeros(temp_1.shape)
+
+    approx_mask = temp_1 < np.log(-np.log(1 - 1e-9))
+
+    errs[~approx_mask] = 1 - np.exp(-np.exp(temp_1[~approx_mask]))
+    errs[approx_mask] = np.exp(temp_1[approx_mask])
+
+    # set error to 1 for deterministic errors
+
+    errs[fs == 0] = 1
+
+    return np.mean(errs)
+
+
 def recall_error_upper_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
     """
     calculate using Monte Carlo simulation the probability of correctly recalling l associations
@@ -129,149 +280,3 @@ def log_max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, m_tol, v
     log_m_best = optimize.brentq(function_to_solve, log_m_test - 1, log_m_test, xtol=m_tol)
 
     return log_m_best
-
-
-def recall_error_upper_bound(log_m, l, fs, log_neg_log_hs):
-    """
-    calculate a lower bound on the correct recall probability for an idealized version of the short-term
-    associative memory network with random connections; this function assumes that f and h have been
-    precomputed from a random selection of {v_1, ..., v_2l}; as the size of f, h, increases the approximation
-    becomes exact.
-
-    :param log_m: log of number of item units
-    :param l: number of pair-wise associations required to recall
-    :param fs: indicator values indicating whether {v_1, ..., v_2L} interferes with recall
-    :param log_neg_log_hs: log of negative log probability that a single random v_j interferes with recall
-        (see notebook for why this is a useful mathematical quantity)
-    :return approximate probability of incorrectly recalling l associations
-    """
-
-    # assume m = m - 2L if m/(2L) > 1e9
-
-    if (log_m - np.log(2*l)) > 9*np.log(10):
-
-        temp_0 = log_m
-
-    else:
-
-        temp_0 = np.log(np.exp(log_m) - (2*l))
-
-    # calc temp quantity comparing m to
-
-    temp_1 = temp_0 + log_neg_log_hs
-
-    # calculate error using either exact formula or log approximation
-
-    errs = np.nan * np.zeros(temp_1.shape)
-
-    approx_mask = temp_1 < np.log(-np.log(1 - 1e-9))
-
-    errs[~approx_mask] = 1 - np.exp(-np.exp(temp_1[~approx_mask]))
-    errs[approx_mask] = np.exp(temp_1[approx_mask])
-
-    # set error to 1 for deterministic errors
-
-    errs[fs == 0] = 1
-
-    # if error is less than 1e-9 calculate via log approximation for greater accuracy
-
-    return np.mean(errs)
-
-
-def no_interference_first_items(vs):
-    """
-    For each of several matrices, calculate whether they will interfere with one another or not
-    :param vs:
-    :return:
-    """
-
-    # calculate maintained sets
-
-    fs = -1 * np.ones((vs.shape[0],), dtype=int)
-
-    l = int(vs.shape[1] / 2)
-
-    for v_ctr, v in enumerate(vs):
-
-        # get intersections, sizes, and maintained sets
-
-        isctns = np.array([v[2*i, :] * v[2*i+1, :] for i in range(int(len(v)/2))])
-        isctn_sizes = isctns.sum(1)
-        maintained = (isctns.sum(0) > 0).astype(int)
-
-        if np.any(isctn_sizes == 0):
-
-            fs[v_ctr] = 0
-
-            continue
-
-        f = 1
-
-        for i, isctn_size in enumerate(isctn_sizes):
-
-            for j in [jj for jj in range(l) if jj not in [2*i, 2*i + 1]]:
-
-                if np.sum(v[j, :] * v[2*i, :] * maintained) >= isctn_size:
-
-                    f = 0
-
-                    break
-
-                if np.sum(v[j, :] * v[2*i + 1, :] * maintained) >= isctn_size:
-
-                    f = 0
-
-                    break
-
-            if f == 0:
-
-                break
-
-        fs[v_ctr] = f
-
-    return fs
-
-
-def log_neg_log_probability_no_interference_lower_bound_random_item(vs, q):
-    """
-    Calculate a lower bound on the probability that there will be no interference between
-    the random connections between a single item and the association/memory reservoir,
-    given the connections of a set of item associations to be remembered.
-
-    :param vs: list of vs (connections between first 2l item units and memory reservoir)
-    :param q: connection probability
-    :return: probability of no interference for each v
-    """
-
-    log_neg_log_hs = np.nan * np.zeros((vs.shape[0],))
-
-    for v_ctr, v in enumerate(vs):
-
-        # get intersections, sizes, and maintained sets
-
-        isctns = np.array([v[2 * i, :] * v[2 * i + 1, :] for i in range(int(len(v) / 2))])
-        isctn_sizes = isctns.sum(1)
-        maintained = (isctns.sum(0) > 0).astype(int)
-
-        # store the log of the negative log of each cumulative distribution
-
-        temps = []
-
-        for i, isctn_size in enumerate(isctn_sizes):
-
-            log_sf = stats.binom.logsf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
-
-            # if sf is very small then sf = -log(cdf) approximately
-
-            if log_sf < -9*np.log(10):
-
-                temps.append(log_sf)
-
-            else:
-
-                log_cdf = stats.binom.logcdf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
-                temps.append(np.log(-log_cdf))
-
-        log_neg_log_hs[v_ctr] = _log_sum(np.array(temps))
-
-    return log_neg_log_hs
