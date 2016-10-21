@@ -25,7 +25,7 @@ def max_items_low_error(max_log_error, n_mc, n, l, q, r=None, log_epsilon=-9*np.
 
     def func_to_solve(log_m):
 
-        log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+        log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon) - np.log(n_mc)
 
         return log_mc_sum - max_log_error
 
@@ -54,7 +54,7 @@ def log_upper_error_bound(log_ms, n_mc, n, l, q, r=None, log_epsilon=-9*np.log(1
     fs, log_neg_log_hs = calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r, log_epsilon)
 
     log_errors = [
-        calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+        calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon) - np.log(n_mc)
         for log_m in log_ms
     ]
 
@@ -86,8 +86,8 @@ def calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon):
 
     # fill in terms not requiring approximation
 
-    h_to_m_minus_2l = np.exp(-np.exp(log_neg_log_hs[~approx_mask]) + log_m_minus_2l)
-    log_sum_terms[~approx_mask] = np.log(1 - h_to_m_minus_2l)
+    h_to_m_minus_2ls = np.exp(-np.exp(log_neg_log_hs[~approx_mask])) ** np.exp(log_m_minus_2l)
+    log_sum_terms[~approx_mask] = np.log(1 - h_to_m_minus_2ls)
 
     # set log error for terms with f = 0 (interference among first items) to 0
 
