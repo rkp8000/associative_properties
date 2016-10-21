@@ -6,277 +6,219 @@ import numpy as np
 from scipy import optimize
 from scipy import stats
 
+import auxiliary as aux
 
-def _log_sum(log_xs):
-    """Efficiently calculates the logarithm of a sum from the logarithm of its
-    terms.
 
-    logsum employs an efficient algorithm for finding the logarithm of a sum
-    of numbers when provided with the logarithm of the terms in the sum; this
-    is useful when the logarithms are too large or small
-    and would cause numerical errors if exponentiated
-
-    :param log_xs: logarithms of terms to sum (1d array)
-    :return logarithm of the sum
-
-    example:
-        >>> log_xs = np.array([-1000,-1001,-1002])
-        >>> np.log(np.sum(np.exp(log_xs)))
-        -inf
-        >>> _log_sum(log_xs)
-        -999.59239403555557
-        >>> log_xs = np.array([1000,1001,1002])
-        >>> np.log(np.sum(np.exp(log_xs)))
-        inf
-        >>> _log_sum(log_xs)
-        1002.4076059644444
+def max_items_low_error(max_log_error, n_mc, n, l, q, r=None, log_epsilon=-9*np.log(10)):
     """
-    # get largest element
-
-    log_x_max = np.max(log_xs)
-
-    # normalize log_x by subtracting log_x_max
-
-    log_x_normed = log_xs - log_x_max
-
-    # calculate sum of logarithms
-
-    return log_x_max + np.log(np.sum(np.exp(log_x_normed)))
-
-
-def no_interference_first_items(vs):
-    """
-    For each of several matrices, calculate whether they will interfere with one another or not
-    :param vs: stack of 2D arrays corresponding to connections for first 2L items
-    :return: 1 or 0 for each v; 1 indicates no interference among first items, 0 otherwise
+    Calculate the log of the maximum number of items that a set of associative
+    memory units can support with the expected recall error lying below
+    a specified quantity.
     """
 
-    # calculate maintained sets
+    # calculate the main components of the terms going into the
+    # monte-carlo sampling sum
 
-    fs = -1 * np.ones((vs.shape[0],), dtype=int)
+    fs, log_neg_log_hs = calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r, log_epsilon)
 
-    l = int(vs.shape[1] / 2)
+    # make function that return diff between true and acceptable error
 
-    for v_ctr, v in enumerate(vs):
+    def func_to_solve(log_m):
 
-        # get intersections, sizes, and maintained sets
+        log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
 
-        isctns = np.array([v[2*i, :] * v[2*i+1, :] for i in range(int(len(v)/2))])
-        isctn_sizes = isctns.sum(1)
-        maintained = (isctns.sum(0) > 0).astype(int)
+        return log_mc_sum - max_log_error
 
-        # set to 0 if any empty intersections
+    # determine initial optimization bracket
 
-        if np.any(isctn_sizes == 0):
+    log_m_ub = np.log(2*l)
 
-            fs[v_ctr] = 0
-            continue
+    # if 2L item units gives too large an error, return -np.inf
 
-        f = 1
+    if func_to_solve(log_m_ub) >= 0: return -np.inf
+    else: log_m_ub += 1
 
-        # loop over all intersections
+    while func_to_solve(log_m_ub) < 0: log_m_ub += 1
 
-        for i, isctn_size in enumerate(isctn_sizes):
+    # find the root of the equation
 
-            # loop over all items not in this conjunction
-
-            for j in [jj for jj in range(l) if jj not in [2*i, 2*i + 1]]:
-
-                # set to 0 if this item interferes with either item in current conjunction
-
-                if np.sum(v[j, :] * v[2*i, :] * maintained) >= isctn_size:
-
-                    f = 0
-                    break
-
-                if np.sum(v[j, :] * v[2*i + 1, :] * maintained) >= isctn_size:
-
-                    f = 0
-                    break
-
-            # stop counting if an interference has been found
-
-            if f == 0:
-
-                break
-
-        fs[v_ctr] = f
-
-    return fs
+    return optimize.brentq(func_to_solve, log_m_ub - 1, log_m_ub)
 
 
-def log_neg_log_probability_no_interference_lower_bound_random_item(vs, q):
+def log_upper_error_bound(log_ms, n_mc, n, l, q, r=None, log_epsilon=-9*np.log(10)):
     """
-    Calculate a lower bound on the probability that there will be no interference between
-    the random connections between a single item and the association/memory reservoir,
-    given the connections of a set of item associations to be remembered.
-
-    :param vs: list of vs (connections between first 2l item units and memory reservoir)
-    :param q: connection probability
-    :return: log of the negative log of lower bound on probability of no interference for each v
+    Calculate the log upper bound of the expected recall error for a network
+    with n units and several different numbers of item units connected.
     """
 
-    log_neg_log_hs = np.nan * np.zeros((vs.shape[0],))
+    fs, log_neg_log_hs = calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r, log_epsilon)
 
-    for v_ctr, v in enumerate(vs):
+    log_errors = [
+        calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+        for log_m in log_ms
+    ]
 
-        # get intersections, sizes, and maintained sets
-
-        isctns = np.array([v[2 * i, :] * v[2 * i + 1, :] for i in range(int(len(v) / 2))])
-        isctn_sizes = isctns.sum(1)
-        maintained = (isctns.sum(0) > 0).astype(int)
-
-        # store the log of the negative log of each cumulative distribution
-
-        temps = []
-
-        for i, isctn_size in enumerate(isctn_sizes):
-
-            log_sf = stats.binom.logsf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
-
-            # if sf is very small then sf = -log(cdf) approximately
-
-            if log_sf < -9*np.log(10):
-
-                temps.append(log_sf)
-
-            else:
-
-                log_cdf = stats.binom.logcdf(isctn_size - 1, np.sum(v[i, :] * maintained), q)
-                temps.append(np.log(-log_cdf))
-
-        log_neg_log_hs[v_ctr] = _log_sum(np.array(temps))
-
-    return log_neg_log_hs
+    return log_errors
 
 
-def recall_error_upper_bound(log_m, l, fs, log_neg_log_hs):
+def calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon):
     """
-    calculate an upper bound on the recall error for an idealized version of the short-term
-    associative memory network with random connections; this function assumes that f and h have been
-    precomputed from a random selection of {v_1, ..., v_2l}; as the size of f, h, increases the approximation
-    becomes exact.
-
-    :param log_m: log of number of item units
-    :param l: number of pair-wise associations required to recall
-    :param fs: indicator values indicating whether {v_1, ..., v_2L} interferes with recall
-    :param log_neg_log_hs: log of negative log probability that a single random v_j interferes with recall
-        (see notebook for why this is a useful mathematical quantity)
-    :return approximate probability of incorrectly recalling l associations
+    Calculate the log of the sum of the terms in the Monte-Carlo approximation
+    given some temporary quantities.
     """
 
-    # assume m = m - 2L if m/(2L) > 1e9
+    # approximate log(M - 2L) if necessary
 
-    if (log_m - np.log(2*l)) > 9*np.log(10):
+    if np.log(2*l) - log_m < log_epsilon: log_m_minus_2l = log_m
+    else: log_m_minus_2l = np.log(np.exp(log_m) - 2*l)
 
-        temp_0 = log_m
+    # make mask for approximating log(M - 2L) + log(-log(h))
+
+    approx_mask = log_m_minus_2l + log_neg_log_hs < log_epsilon
+
+    # get log of all terms in sum
+
+    log_sum_terms = np.nan * np.zeros((len(fs),))
+
+    # fill in terms requiring approximation
+
+    log_sum_terms[approx_mask] = log_m_minus_2l + log_neg_log_hs[approx_mask]
+
+    # fill in terms not requiring approximation
+
+    h_to_m_minus_2l = np.exp(-np.exp(log_neg_log_hs[~approx_mask]) + log_m_minus_2l)
+    log_sum_terms[~approx_mask] = np.log(1 - h_to_m_minus_2l)
+
+    # set log error for terms with f = 0 (interference among first items) to 0
+
+    log_sum_terms[fs == 0] = 0
+
+    return aux.log_sum(log_sum_terms)
+
+
+def calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r):
+    """
+    Calculate the f and h components of each term in the Monte-Carlo sum.
+    """
+
+    # sample first 2L units' cxns and calculate the pairwise intersections
+    # and their sizes
+
+    if r is None:  # symmetric case
+
+        vs = sample_vs(n_mc=n_mc, n=n, l=l, q=q)
+        xs_all, rs_all = zip(*[calc_xs_and_rs(v) for v in vs])
+
+    else:  # asymmetric case
+
+        vs, us = sample_vs_and_us(n_mc=n_mc, n=n, l=l, q=q, r=r)
+        xs_all, rs_all = zip(*[calc_xs_and_rs(v, u) for v, u in zip(vs, us)])
+
+    x_sizes_all = [xs.sum(axis=1) for xs in xs_all]
+
+    # calc f and log(-log(h)) for each v
+
+    fs = [calc_f(v, xs, rs) for v, xs, rs in zip(vs, xs_all, rs_all)]
+    log_neg_log_hs = [
+        calc_log_neg_log_h(x_sizes, rs, q, log_epsilon)
+        for x_size, rs in zip(x_sizes_all, rs_all)
+    ]
+
+    return np.array(fs), np.array(log_neg_log_hs)
+
+
+def sample_vs(n_mc, n, l, q):
+    """
+    Return n_mc samples of random bidirectional connections.
+    """
+
+    return (np.random.rand(n_mc, 2*l, n) < q).astype(int)
+
+
+def sample_vs_and_us(n_mc, n, l, q, r):
+
+    # sample assoc->item cxns and get non-reciprocal scale factor d
+    vs = sample_vs(n_mc, n, l, q)
+    d = (1 - q*r) / (1 - q)
+
+    # sample item->assoc cxns
+    us = np.nan * np.zeros(vs.shape)
+
+    us[vs.astype(bool)] = (np.random.rand(vs.sum()) < q*r).astype(int)
+    us[~vs.astype(bool)] = (np.random.rand(vs.size - v.sum()) < q*d).astype(int)
+
+    return vs, us
+
+
+def calc_xs_and_rs(v, u=None):
+    """
+    Calculate the intersection of each item's downstream neighbors with
+    the maintained set of association units.
+    """
+
+    # calculate pairwise intersections
+    if u is None: isctns = np.array([v[ctr] * v[ctr + 1] for ctr in range(0, len(v), 2)])
+    else: isctns = np.array([u[ctr] * u[ctr + 1] for ctr in range(0, len(u), 2)])
+
+    # calculate maintained set
+    maintained = isctns.sum(axis=0).astype(bool).astype(int)
+
+    # calculate xs
+    if u is None: xs = [np.sum(v[ctr] * maintained) for ctr in range(len(v))]
+    else: xs = [np.sum(u[ctr] * maintained) for ctr in range(len(v))]
+
+    # calculate rs
+    if u is None:
+
+        rs = np.array([
+            np.sum(xs[ctr] * v[ctr + 1]) if ctr % 2 == 0 else np.sum(xs[ctr] * v[ctr-1])
+            for ctr in range(len(v))
+        ])
 
     else:
 
-        temp_0 = np.log(np.exp(log_m) - (2*l))
+        rs = np.array([
+            np.sum(xs[ctr] * u[ctr+1]) if ctr % 2 == 0 else np.sum(xs[ctr] * u[ctr-1])
+            for ctr in range(len(u))
+        ])
 
-    # calc temp quantity comparing m to
-
-    temp_1 = temp_0 + log_neg_log_hs
-
-    # calculate error using either exact formula or log approximation
-
-    errs = np.nan * np.zeros(temp_1.shape)
-
-    approx_mask = temp_1 < np.log(-np.log(1 - 1e-9))
-
-    errs[~approx_mask] = 1 - np.exp(-np.exp(temp_1[~approx_mask]))
-    errs[approx_mask] = np.exp(temp_1[approx_mask])
-
-    # set error to 1 for deterministic errors
-
-    errs[fs == 0] = 1
-
-    return np.mean(errs)
+    return xs, rs
 
 
-def recall_error_upper_bound_vs_item_number(ms, n, q, l, n_samples_mc, vs=None):
+def calc_f(v, xs, rs):
     """
-    calculate using Monte Carlo simulation the probability of correctly recalling l associations
-    between m possible items connected to n association/memory units
-    :param ms: number of item units (1D array)
-    :param n: number of association/memory units
-    :param q: connection probability
-    :param l: number of associations to recall
-    :param n_samples_mc: number of samples in monte carlo simulation
-    :return: 1D array of probabilities (one for each m)
+    Return 0 if there is interference among the provided set of cxns
+    otherwise return 1.
     """
 
-    # first take many samples of connections of the first 2l items to the memory units
+    if len(v) <= 2: return 1
 
-    if vs is None:
+    for ctr_0, (x, r) in enumerate(zip(xs, rs)):
 
-        vs = (np.random.rand(n_samples_mc, 2*l, n) < q).astype(int)
+        # pair to which the item belongs
+        pair = (ctr_0, ctr_0 + 1) if x % 2 == 0 else (ctr_0 - 1, ctr_0)
 
-    # calculate f, the indicator values for whether the first 2l item unit connections
-    # interfere with recall (with an indicator of 0 if they do)
+        remaining_units = [j for j in range(len(vs)) if j not in pair]
 
-    fs = no_interference_first_items(vs)
+        for ctr_1 in remaining_units:
 
-    # calculate h, a lower bound probability that a random item's connections interfere
+            if (v[ctr_1] * x).sum() >= r: return 0
 
-    log_neg_log_hs = log_neg_log_probability_no_interference_lower_bound_random_item(vs, q)
-
-    # calculate lower bound on correct recall probabilities
-
-    errs = [recall_error_upper_bound(np.log(m), l, fs, log_neg_log_hs) for m in ms]
-
-    return np.array(errs)
+    return 1
 
 
-def log_max_items_with_low_recall_error(n, q, l, err_max, n_samples_mc, m_tol, vs=None):
+def calc_log_neg_log_h(x_sizes, rs, q, log_epsilon):
     """
-    approximate the maximum number of items that can be randomly connected to a memory reservoir such
-    that the probability of incorrect recall is less than a specified level
-
-    :param n: number of association/memory units
-    :param q: connection probability
-    :param l: number of associations to recall
-    :param err_max: max recall error (from 0 to 1)
-    :param n_samples_mc: number of samples to use in monte carlo simulation
-    :return: number of items (m)
+    Calculate the cumulative probability that getting less than r out of x_size
+    connections with connection probability q.
     """
 
-    # first take many samples of connections of the first 2l items to the memory units
+    # calc log survival function first
+    log_sfs = stats.binom.logsf(rs - 1, x_sizes, q)
 
-    if vs is None:
+    # replace log_sf by log(-log_cdf) when log_sf is too big to approximate
+    mask = log_sfs >= log_epsilon
+    log_sfs[mask] = np.log(-stats.binom.logcdf(rs[mask] - 1, x_sizes[mask], q))
 
-        vs = (np.random.rand(n_samples_mc, 2 * l, n) < q).astype(int)
-
-    # calculate f, the indicator values for whether the first 2l item unit connections
-    # interfere with recall (with an indicator of 0 if they do)
-
-    fs = no_interference_first_items(vs)
-
-    # calculate h, a lower bound probability that a random item's connections interfere
-
-    log_neg_log_hs = log_neg_log_probability_no_interference_lower_bound_random_item(vs, q)
-
-    # determine bounds for the function solver
-
-    ## keep doubling m until the recall probability is lower than p_min
-
-    log_m_test = np.log(2*l + 1)
-
-    if recall_error_upper_bound(log_m_test, l, fs, log_neg_log_hs) >= err_max:
-
-        return 0
-
-    while recall_error_upper_bound(log_m_test, l, fs, log_neg_log_hs) < err_max:
-
-        log_m_test += 1
-
-    # now that we have upper and lower bounds, solve for the best m using Brent's method
-
-    def function_to_solve(log_m):
-
-        return recall_error_upper_bound(log_m, l, fs, log_neg_log_hs) - err_max
-
-    log_m_best = optimize.brentq(function_to_solve, log_m_test - 1, log_m_test, xtol=m_tol)
-
-    return log_m_best
+    # return the log of the sum of the sfs
+    return aux.log_sum(log_sfs)
