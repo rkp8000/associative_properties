@@ -208,3 +208,42 @@ def test_calc_log_neg_log_h_works_on_examples():
     log_neg_log_h = calc_log_neg_log_h(x_sizes, rs, q, log_epsilon)
 
     assert round(log_neg_log_h, 7) == round(log_neg_log_h_correct, 7)
+
+
+def test_calc_log_mc_sum_works_on_examples():
+
+    from auxiliary import log_sum
+    from capacity_analysis import calc_log_mc_sum
+
+    log_neg_log_hs = np.array([-3.1, -5, -7, -9, -20, -50])
+    log_m = 5
+    l = 3
+    log_epsilon = -9 * np.log(10)
+
+    # test case when fs are all 0
+    fs = np.zeros(log_neg_log_hs.shape)
+
+    log_mc_sum_correct = np.log(len(fs))
+    log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+
+    assert log_mc_sum == log_mc_sum_correct
+
+    # test case when fs are all 1 and no approximations are needed
+    log_neg_log_hs = np.array([-3.1, -5, -7, -4, -6.2, -8])
+    fs = np.ones(log_neg_log_hs.shape)
+
+    hs = np.exp(-np.exp(log_neg_log_hs))
+    h_to_m_minus_2ls = hs**(np.exp(log_m) - 2*l)
+    log_mc_sum_correct = np.log(np.sum(1 - h_to_m_minus_2ls))
+
+    log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+
+    assert round(log_mc_sum, 7) == round(log_mc_sum_correct, 7)
+
+    # test case when fs are all 1 and approximations are always needed
+    log_neg_log_hs = np.array([-30, -40, -50, -55, -60, -70])
+    log_mc_sum_correct = log_sum(np.log(np.exp(log_m) - 2*l) + log_neg_log_hs)
+
+    log_mc_sum = calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon)
+
+    assert round(log_mc_sum, 7) == round(log_mc_sum_correct, 7)
