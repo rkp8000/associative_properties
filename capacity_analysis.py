@@ -96,7 +96,7 @@ def calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon):
     return aux.log_sum(log_sum_terms)
 
 
-def calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r):
+def calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r, log_epsilon):
     """
     Calculate the f and h components of each term in the Monte-Carlo sum.
     """
@@ -121,7 +121,7 @@ def calc_fs_and_log_neg_log_hs(n_mc, n, l, q, r):
     fs = [calc_f(v, xs, rs) for v, xs, rs in zip(vs, xs_all, rs_all)]
     log_neg_log_hs = [
         calc_log_neg_log_h(x_sizes, rs, q, log_epsilon)
-        for x_size, rs in zip(x_sizes_all, rs_all)
+        for x_sizes, rs in zip(x_sizes_all, rs_all)
     ]
 
     return np.array(fs), np.array(log_neg_log_hs)
@@ -145,7 +145,7 @@ def sample_vs_and_us(n_mc, n, l, q, r):
     us = np.nan * np.zeros(vs.shape)
 
     us[vs.astype(bool)] = (np.random.rand(vs.sum()) < q*r).astype(int)
-    us[~vs.astype(bool)] = (np.random.rand(vs.size - v.sum()) < q*d).astype(int)
+    us[~vs.astype(bool)] = (np.random.rand(vs.size - vs.sum()) < q*d).astype(int)
 
     return vs, us
 
@@ -164,23 +164,14 @@ def calc_xs_and_rs(v, u=None):
     maintained = isctns.sum(axis=0).astype(bool).astype(int)
 
     # calculate xs
-    if u is None: xs = [np.sum(v[ctr] * maintained) for ctr in range(len(v))]
-    else: xs = [np.sum(u[ctr] * maintained) for ctr in range(len(v))]
+    if u is None: xs = np.array([(v[ctr] * maintained).astype(int) for ctr in range(len(v))])
+    else: xs = np.array([(u[ctr] * maintained).astype(int) for ctr in range(len(v))])
 
     # calculate rs
-    if u is None:
-
-        rs = np.array([
-            np.sum(xs[ctr] * v[ctr + 1]) if ctr % 2 == 0 else np.sum(xs[ctr] * v[ctr-1])
-            for ctr in range(len(v))
-        ])
-
-    else:
-
-        rs = np.array([
-            np.sum(xs[ctr] * u[ctr+1]) if ctr % 2 == 0 else np.sum(xs[ctr] * u[ctr-1])
-            for ctr in range(len(u))
-        ])
+    rs = np.array([
+        np.sum(xs[ctr] * v[ctr + 1]) if ctr % 2 == 0 else np.sum(xs[ctr] * v[ctr-1])
+        for ctr in range(len(v))
+    ])
 
     return xs, rs
 
@@ -196,9 +187,9 @@ def calc_f(v, xs, rs):
     for ctr_0, (x, r) in enumerate(zip(xs, rs)):
 
         # pair to which the item belongs
-        pair = (ctr_0, ctr_0 + 1) if x % 2 == 0 else (ctr_0 - 1, ctr_0)
+        pair = (ctr_0, ctr_0 + 1) if ctr_0 % 2 == 0 else (ctr_0 - 1, ctr_0)
 
-        remaining_units = [j for j in range(len(vs)) if j not in pair]
+        remaining_units = [j for j in range(len(v)) if j not in pair]
 
         for ctr_1 in remaining_units:
 
