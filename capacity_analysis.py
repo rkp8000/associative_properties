@@ -86,7 +86,7 @@ def calc_log_mc_sum(fs, log_neg_log_hs, log_m, l, log_epsilon):
 
     # fill in terms not requiring approximation
 
-    h_to_m_minus_2ls = np.exp(-np.exp(log_neg_log_hs[~approx_mask])) ** np.exp(log_m_minus_2l)
+    h_to_m_minus_2ls = np.exp(-np.exp(log_neg_log_hs[~approx_mask] + log_m_minus_2l))
     log_sum_terms[~approx_mask] = np.log(1 - h_to_m_minus_2ls)
 
     # set log error for terms with f = 0 (interference among first items) to 0
