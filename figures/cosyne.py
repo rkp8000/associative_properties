@@ -1,11 +1,15 @@
 from __future__ import division, print_function
-import matplotlib.pyplot as plt
+from itertools import product as cproduct
+import logging
+import matplotlib.pyplot as plt; plt.style.use('ggplot')
 import numpy as np
-from scipy import optimize
-from scipy import stats
+import threading
 
-from capacity_analysis import recall_error_upper_bound_vs_item_number, log_max_items_with_low_recall_error
-from plot import set_fontsize
+from capacity_analysis import max_items_low_error, log_upper_error_bound
+from db import connect_and_make_session, check_tables_not_empty, prepare_logging
+from db import _models
+from network import LIFWithKWTAItems
+from plot import get_n_colors, set_fontsize
 
 
 def lif_example(
@@ -17,6 +21,8 @@ def lif_example(
     """
     Demonstrate associative recall in an LIF network.
     """
+
+    np.random.seed(SEED)
 
     cxn_ap = (np.random.rand(N_ITEMS, N_ASSOCS) < P_CXN).astype(float)
 
@@ -126,86 +132,191 @@ def lif_example(
     return fig
 
 
-def capacity_analysis(
-        SEED,
-        Q, L_EXAMPLE, NS_EXAMPLE, MS_EXAMPLE, ERR_MAX_EXAMPLE,
-        NS, LS, ERR_MAX, M_TOL, N_SAMPLES_MC, N_TRIALS):
+def _write_error_bound_vs_number_of_items(
+        SEED, LOG_10_MS, N_TRIALS, N_MC, L, NS, Q, R, GROUP_NAME, LOG_FILE):
     """
-    Perform an analysis of the capacity of an ideal network for recalling conjunctions.
+    Calculate the expected error bound given network parameters and several
+    numbers of item units.
     """
 
     np.random.seed(SEED)
 
-    # plot example error rate vs. m
+    # set up database and logging
+    session = connect_and_make_session('associative_properties')
+    prepare_logging(LOG_FILE)
 
-    ms_example = np.array(MS_EXAMPLE)
+    log_ms = np.array(LOG_10_MS) * np.log(10)
 
-    error_bounds_example = {
-        n: recall_error_upper_bound_vs_item_number(
-            ms=ms_example, n=n, q=Q, l=L_EXAMPLE, n_samples_mc=N_SAMPLES_MC)
-        for n in NS_EXAMPLE
-    }
+    message = (
+        '\n\nBeginning {} trials with NS = {}, N_MC = {}, \n'
+        'L = {}, Q = {}, R = {}, GROUP_NAME= {}\n'
+    ).format(N_TRIALS, NS, N_MC, L, Q, R, GROUP_NAME)
+    logging.info(message)
 
-    # loop through ls and ns to calculate capacity
+    for tr_ctr, n in cproduct(range(N_TRIALS), NS):
 
-    capacity_means = {}
-    capacity_sems = {}
+        # log current n and trial number
+        logging.info('Trial {}, N = {}'.format(tr_ctr, n))
+        log_errors = log_upper_error_bound(log_ms=log_ms, n_mc=N_MC, n=n, l=L, q=Q, r=R)
 
-    for l in LS:
+        eb = _models.ErrorBound(
+            log_10_ms=LOG_10_MS,
+            n_mc=N_MC,
+            n=n,
+            l=L,
+            q=Q,
+            r=R,
+            log_errors=log_errors,
+            group_name=GROUP_NAME)
 
-        capacity_estimates = []
+        session.add(eb)
+        session.commit()
 
-        for _ in range(N_TRIALS):
+    logging.info('Complete.')
 
-            capacity_estimates.append([
-                log_max_items_with_low_recall_error(n, Q, l, ERR_MAX, N_SAMPLES_MC, M_TOL) for n in NS
-            ])
 
-        capacity_estimates = np.array(capacity_estimates) / np.log(10)
+def write_error_bound_vs_number_of_items(**kwargs):
+    """
+    Call the previous function in a worker thread.
+    """
 
-        capacity_means[l] = np.mean(capacity_estimates, axis=0)
-        capacity_sems[l] = stats.sem(capacity_estimates, axis=0)
+    t = threading.Thread(target=_write_error_bound_vs_number_of_items, kwargs=kwargs)
+    t.start()
 
-    # MAKE PLOTS
 
-    fig, axs = plt.subplots(1, 2, figsize=(12, 6), tight_layout=True)
+def _write_item_capacity(
+        SEED, MAX_LOG_10_ERROR, N_TRIALS, N_MC, LS, NS, QS, RS, GROUP_NAME, LOG_FILE):
+    """
+    Calculate the maximum number of items supported by a given network
+    such that the recall error is below a lower bound.
+    """
 
-    # example dependence on M
+    np.random.seed(SEED)
 
-    handles_example = []
+    # set up database and logging
+    session = connect_and_make_session('associative_properties')
+    prepare_logging(LOG_FILE)
 
-    for n in NS_EXAMPLE:
+    message = (
+        'Beginning {} trials with MAX_LOG_10_ERROR = {}, NS = {}, N_MC = {}, LS = {}, '
+        'QS = {}, RS = {}, GROUP_NAME = {}'
+    ).format(N_TRIALS, MAX_LOG_10_ERROR, NS, N_MC, LS, QS, RS, GROUP_NAME)
+    logging.info(message)
 
-        handles_example.append(
-            axs[0].loglog(
-                ms_example, error_bounds_example[n], lw=2, label='N = {}'.format(n))[0])
+    max_log_error = MAX_LOG_10_ERROR * np.log(10)
 
-    axs[0].axhline(ERR_MAX_EXAMPLE, color='k', lw=1)
+    for tr_ctr, n, l, q, r in cproduct(range(N_TRIALS), NS, LS, QS, RS):
 
-    axs[0].set_xlabel('M')
-    axs[0].set_ylabel('error upper bound')
+        # log current values and trial number
+        message = 'Trial {}, N = {}, L = {}, Q = {}, R = {}'.format(tr_ctr, n, l, q, r)
+        logging.info(message)
 
-    axs[0].legend(loc='best')
+        log_item_capacity = max_items_low_error(max_log_error, n_mc=N_MC, n=n, l=l, q=q, r=r)
 
-    # capacity vs. N
+        ic = _models.ItemCapacity(
+            max_log_10_error=MAX_LOG_10_ERROR,
+            n_mc=N_MC,
+            n=n,
+            l=l,
+            q=q,
+            r=r,
+            log_item_capacity=log_item_capacity,
+            group_name=GROUP_NAME)
 
+        session.add(ic)
+        session.commit()
+
+    logging.info('Complete.')
+
+
+def write_item_capacity(**kwargs):
+    """
+    Call the previous function in background thread.
+    """
+
+    t = threading.Thread(target=_write_item_capacity, kwargs=kwargs)
+    t.start()
+
+
+def error_bound_vs_number_of_items(GROUP_NAME, NS, L, Q, R):
+    """
+    Plot the error bound vs. number of items for several NS.
+    """
+
+    # preliminaries
+    session = connect_and_make_session('associative_properties')
+    check_tables_not_empty(session, _models.ErrorBound)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    colors = get_n_colors(len(NS), colormap='hsv')
     handles = []
 
-    for l in LS:
+    for n, color in zip(NS, colors):
+
+        records = session.query(_models.ErrorBound).filter(
+            _models.ErrorBound.group_name == GROUP_NAME,
+            _models.ErrorBound.n == n,
+            _models.ErrorBound.l == L,
+            _models.ErrorBound.q.between(0.99 * Q, 1.01 * Q),
+            _models.ErrorBound.r.between(0.99 * R, 1.01 * R)).all()
+
+        log_10_ms = np.array([record.log_10_ms for record in records])
+        log_errors = np.array([record.log_errors for record in records])
 
         handles.append(
-            axs[1].errorbar(
-                NS, capacity_means[l], yerr=capacity_sems[l], lw=2, label='L = {}'.format(l))[0])
+            ax.loglog(
+                10 ** log_10_ms.mean(axis=0), np.exp(log_errors.mean(axis=0)),
+                color=color, lw=2, label='N = {}'.format(n))[0])
 
-    axs[1].set_xticks(NS)
-    axs[1].set_xticklabels(NS, rotation=70)
+    ax.set_xlabel('number of item units')
+    ax.set_ylabel('expected incorrect\n recall probability')
 
-    axs[1].set_xlabel('N')
-    axs[1].set_ylabel('log10(max M)')
-    axs[1].legend(loc='best')
+    ax.legend(handles=handles, loc='best')
 
-    for ax in axs.flatten():
-
-        set_fontsize(ax, 16)
+    set_fontsize(ax, 16)
 
     return fig
+
+
+def item_capacity(GROUP_NAME, MAX_LOG_10_ERROR, LS, Q, R):
+    """
+    Plot the item capacity for a network for several LS and NS.
+    """
+
+    # preliminaries
+    session = connect_and_make_session('associative_properties')
+    check_tables_not_empty(session, _models.ItemCapacity)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    colors = get_n_colors(len(LS), colormap='rainbow')
+    handles = []
+
+    m = _models.ItemCapacity
+
+    for l, color in zip(LS, colors):
+
+        records = session.query(_models.ItemCapacity).filter(
+            m.group_name == GROUP_NAME,
+            m.max_log_10_error.between(1.01 * MAX_LOG_10_ERROR, 0.99 * MAX_LOG_10_ERROR),
+            m.l == l,
+            m.q.between(0.99 * Q, 1.01 * Q),
+            m.r.between(0.99 * R, 1.01 * R)).all()
+
+        ns, log_cs = zip(*[(record.n, record.log_item_capacity) for record in records])
+
+        handles.append(
+            ax.semilogy(
+                ns, np.exp(log_cs), 'o', c=color,
+                markeredgecolor='none', label='L = {}'.format(l))[0])
+
+    ax.set_xlabel('number of binding units')
+    ax.set_ylabel('max number of items')
+
+    ax.legend(handles=handles, loc='best')
+
+    ax.set_title('MAX ERROR = 10^{}'.format(MAX_LOG_10_ERROR))
+
+    set_fontsize(ax, 16)
+
+    return fig
+
